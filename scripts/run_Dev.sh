@@ -12,6 +12,7 @@ export DTS_MAX_ATTEMPTS="${DTS_MAX_ATTEMPTS:-3}"
 export DTS_HOST="${DTS_HOST:-127.0.0.1}"
 export DTS_PORT="${DTS_PORT:-8000}"
 export DTS_LOG_LEVEL="${DTS_LOG_LEVEL:-info}"
+export PYTHONPATH="${PYTHONPATH:-}:$(pwd)/src"
 
 python scripts/init_db.py
 
