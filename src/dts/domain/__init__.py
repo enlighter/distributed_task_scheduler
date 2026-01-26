@@ -1,4 +1,3 @@
-# src/dts/domain/__init__.py
 """
 Domain layer for DTS.
 
@@ -8,7 +7,14 @@ Domain layer for DTS.
 """
 
 from .states import TaskStatus
-from .models import TaskCreate, TaskView, TaskListResponse, ErrorResponse
+from .models import (
+    ErrorResponse,
+    TaskBatchCreate,
+    TaskBatchCreateResponse,
+    TaskCreate,
+    TaskListResponse,
+    TaskView,
+)
 from .errors import (
     DTSBaseError,
     ValidationError,
@@ -21,6 +27,8 @@ from .errors import (
 __all__ = [
     "TaskStatus",
     "TaskCreate",
+    "TaskBatchCreate",
+    "TaskBatchCreateResponse",
     "TaskView",
     "TaskListResponse",
     "ErrorResponse",

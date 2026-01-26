@@ -1,9 +1,8 @@
-# src/dts/domain/models.py
 from __future__ import annotations
 
 from typing import Annotated, Optional
 
-from pydantic import BaseModel, Field, ConfigDict, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from .states import TaskStatus
 
@@ -35,6 +34,32 @@ class TaskCreate(BaseModel):
             raise ValueError("task cannot depend on itself")
 
         return deps
+
+
+class TaskBatchCreate(BaseModel):
+    """
+    API input model for submitting a batch of tasks atomically.
+
+    Strict mode:
+    - Dependencies must exist either in DB already OR within the same batch.
+    - Reject cycles within the batch.
+    """
+    model_config = ConfigDict(extra="forbid")
+
+    tasks: list[TaskCreate] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def _validate_batch_ids_unique(self):
+        ids = [t.id for t in self.tasks]
+        if len(ids) != len(set(ids)):
+            raise ValueError("batch contains duplicate task ids")
+        return self
+
+
+class TaskBatchCreateResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    created: list[str]
+    count: int
 
 
 class TaskView(BaseModel):

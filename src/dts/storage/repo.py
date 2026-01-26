@@ -1,6 +1,7 @@
 # src/dts/storage/repo.py
 from __future__ import annotations
 
+from asyncio import tasks
 import sqlite3
 from dataclasses import dataclass
 from typing import Iterable, Optional, Sequence
@@ -417,6 +418,112 @@ class TaskRepo:
             (TaskStatus.RUNNING.value, now_ms),
         ).fetchone()
         return int(row["c"])
+    
+    def create_tasks_batch(
+        self,
+        tasks: list[TaskCreate],
+        now_ms: int,
+        default_max_attempts: int,
+    ) -> list[str]:
+        """
+        Atomically inserts a batch of tasks and dependency edges.
+
+        Strict rules:
+        - All task IDs must be new (no existing IDs in DB).
+        - Dependencies must exist either in DB OR within the same batch.
+        - Cycles within the batch are rejected.
+
+        Returns list of created task IDs (in input order).
+        """
+        if not tasks:
+            raise ValidationError("tasks batch must not be empty")
+
+        batch_ids = [t.id for t in tasks]
+        batch_id_set = set(batch_ids)
+        if len(batch_ids) != len(batch_id_set):
+            raise ValidationError("batch contains duplicate task ids")
+
+        # Validate no self-deps (already checked per TaskCreate) and compute set of all deps
+        all_dep_ids: set[str] = set()
+        for t in tasks:
+            all_dep_ids.update(t.dependencies)
+
+        external_deps = sorted(all_dep_ids - batch_id_set)
+
+        try:
+            begin_immediate(self.conn)
+
+            # Ensure none of the task IDs already exist
+            existing = self._existing_task_ids(batch_ids)
+            if existing:
+                raise ConflictError(
+                    "One or more task ids already exist",
+                    details={"existing": sorted(existing)},
+                )
+
+            # Ensure external deps exist in DB
+            missing_external = self._missing_dependency_ids(external_deps)
+            if missing_external:
+                raise DependencyError(
+                    "One or more dependencies do not exist",
+                    details={"missing": sorted(missing_external)},
+                )
+
+            # Detect cycles within the batch graph (task -> depends_on)
+            self._assert_no_cycle_within_batch(tasks)
+
+            # Pre-fetch completion status for external deps in ONE query
+            external_incomplete = self._external_incomplete_deps(external_deps)
+
+            # Insert tasks first
+            # status=QUEUED always; readiness is derived from remaining_deps==0
+            for t in tasks:
+                remaining = 0
+                for dep in t.dependencies:
+                    if dep in batch_id_set:
+                        remaining += 1  # dep is in batch, not completed yet
+                    else:
+                        # dep exists in DB
+                        if dep in external_incomplete:
+                            remaining += 1
+
+                self.conn.execute(
+                    """
+                    INSERT INTO tasks(
+                      id, type, duration_ms,
+                      status, remaining_deps,
+                      attempts, max_attempts,
+                      created_at, updated_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
+                    """,
+                    (
+                        t.id,
+                        t.type,
+                        t.duration_ms,
+                        TaskStatus.QUEUED.value,
+                        remaining,
+                        0,
+                        default_max_attempts,
+                        now_ms,
+                        now_ms,
+                    ),
+                )
+
+            # Insert dependency edges
+            for t in tasks:
+                for dep in t.dependencies:
+                    self.conn.execute(
+                        "INSERT INTO deps(task_id, depends_on_id) VALUES (?, ?);",
+                        (t.id, dep),
+                    )
+
+            commit(self.conn)
+            return batch_ids
+
+        except Exception:
+            rollback(self.conn)
+            raise
 
     # -------------------------
     # Helpers
@@ -486,3 +593,73 @@ class TaskRepo:
         """
         row = self.conn.execute(query, (*dep_ids, new_task_id)).fetchone()
         return row is not None
+    
+    def _existing_task_ids(self, ids: Sequence[str]) -> set[str]:
+        if not ids:
+            return set()
+        rows = self.conn.execute(
+            f"SELECT id FROM tasks WHERE id IN ({','.join('?' for _ in ids)});",
+            tuple(ids),
+        ).fetchall()
+        return {r["id"] for r in rows}
+
+    def _external_incomplete_deps(self, dep_ids: Sequence[str]) -> set[str]:
+        """
+        Returns the subset of dep_ids that exist in DB and are NOT COMPLETED.
+        """
+        if not dep_ids:
+            return set()
+        rows = self.conn.execute(
+            f"""
+            SELECT id
+            FROM tasks
+            WHERE id IN ({','.join('?' for _ in dep_ids)})
+              AND status != ?;
+            """,
+            (*dep_ids, TaskStatus.COMPLETED.value),
+        ).fetchall()
+        return {r["id"] for r in rows}
+
+    def _assert_no_cycle_within_batch(self, tasks: list[TaskCreate]) -> None:
+        """
+        Detect cycles within the batch DAG using Kahn's algorithm.
+
+        Graph direction: task -> dependency (task depends_on dependency).
+        For cycle detection, we consider edges only among nodes in the batch.
+        """
+        ids = [t.id for t in tasks]
+        id_set = set(ids)
+
+        # Build adjacency for edges dep -> dependents (reverse) for Kahn
+        dependents: dict[str, list[str]] = defaultdict(list)
+        indegree: dict[str, int] = {tid: 0 for tid in ids}
+
+        for t in tasks:
+            for dep in t.dependencies:
+                if dep in id_set:
+                    # dep must be processed before t
+                    dependents[dep].append(t.id)
+                    indegree[t.id] += 1
+
+        q = deque([tid for tid in ids if indegree[tid] == 0])
+        visited = 0
+
+        while q:
+            node = q.popleft()
+            visited += 1
+            for child in dependents.get(node, []):
+                indegree[child] -= 1
+                if indegree[child] == 0:
+                    q.append(child)
+
+        if visited != len(ids):
+            raise CycleDetectedError(
+                "Batch contains a dependency cycle",
+                details={"batch_ids": ids},
+            )
+        
+        # Why this is safe without checking cycles involving existing DB tasks:
+        # Because this batch insert only creates new tasks with edges pointing to existing 
+        # tasks (or within the batch). Existing tasks cannot already reference these new nodes, 
+        # so you cannot form a cycle involving old nodes. The only possible cycle is within 
+        # the new nodes, which we detect.

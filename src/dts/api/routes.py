@@ -16,7 +16,14 @@ from dts.domain.errors import (
     NotFoundError,
     ValidationError,
 )
-from dts.domain.models import ErrorResponse, TaskCreate, TaskListResponse, TaskView
+from dts.domain.models import ( 
+    ErrorResponse, 
+    TaskCreate, 
+    TaskListResponse, 
+    TaskView, 
+    TaskBatchCreate, 
+    TaskBatchCreateResponse 
+)
 from dts.logging import get_logger
 from dts.storage import TaskRepo
 
@@ -60,6 +67,34 @@ def submit_task(
     try:
         repo.create_task(task, now_ms=now_ms(), default_max_attempts=settings.max_attempts)
         return {"id": task.id}
+    except ConflictError as e:
+        return _error_response(e, 409)
+    except (DependencyError, CycleDetectedError, ValidationError) as e:
+        return _error_response(e, 400)
+    except DTSBaseError as e:
+        return _error_response(e, 400)
+    
+@router.post("/tasks/batch", response_model=TaskBatchCreateResponse, status_code=201)
+def submit_tasks_batch(
+    payload: TaskBatchCreate,
+    repo: TaskRepo = Depends(get_repo),
+    settings=Depends(get_settings),
+):
+    """
+    Submit a batch of tasks atomically.
+
+    Strict rules:
+    - Task IDs must be new.
+    - Dependencies must exist in DB or in the batch.
+    - Cycles within the batch are rejected.
+    """
+    try:
+        created = repo.create_tasks_batch(
+            tasks=payload.tasks,
+            now_ms=now_ms(),
+            default_max_attempts=settings.max_attempts,
+        )
+        return TaskBatchCreateResponse(created=created, count=len(created))
     except ConflictError as e:
         return _error_response(e, 409)
     except (DependencyError, CycleDetectedError, ValidationError) as e:
