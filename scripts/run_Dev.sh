@@ -5,7 +5,7 @@ set -euo pipefail
 # Assumes you have an active virtualenv or are using a tool like uv/poetry.
 
 export DTS_DB_PATH="${DTS_DB_PATH:-./var/tasks.db}"
-export DTS_MAX_CONCURRENT="${DTS_MAX_CONCURRENT:-3}"
+export DTS_MAX_CONCURRENT="${DTS_MAX_CONCURRENT:-4}"
 export DTS_SCHED_TICK_MS="${DTS_SCHED_TICK_MS:-200}"
 export DTS_LEASE_MS="${DTS_LEASE_MS:-60000}"
 export DTS_MAX_ATTEMPTS="${DTS_MAX_ATTEMPTS:-3}"

@@ -5,6 +5,7 @@ from asyncio import tasks
 import sqlite3
 from dataclasses import dataclass
 from typing import Iterable, Optional, Sequence
+from collections import defaultdict, deque
 
 from dts.domain.errors import (
     ConflictError,
