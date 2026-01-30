@@ -40,7 +40,7 @@ def _client_ctx(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, *, overrides: O
     _apply_env(monkeypatch, db_path, overrides)
 
     # Import after env is set; reload to avoid cross-test state
-    import dts.api.app as app_mod
+    app_mod = importlib.import_module("dts.api.app")
     importlib.reload(app_mod)
 
     with TestClient(app_mod.app) as client:
